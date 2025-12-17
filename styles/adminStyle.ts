@@ -247,4 +247,27 @@ activeMenuText: {
         fontSize: 24,
         fontWeight: 'bold',
     },
+    // Logo Container
+  logoContainer: {
+    position: 'sticky',
+    top: 16,
+    right: 16,
+    zIndex: 1000,
+    backgroundColor: 'white',
+    borderRadius: 50,
+    padding: 4,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  logo: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+  },
 });

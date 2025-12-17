@@ -35,6 +35,7 @@ export default function PaymentModal({
   const handlePaymentMethodSelect = (method: string) => {
     setPaymentMethod(method);
     if (method !== 'tunai') {
+      // For non-cash payments, complete immediately
       onPaymentComplete(method);
       resetState();
     }
