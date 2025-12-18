@@ -54,9 +54,9 @@ export default function CashierDashboard() {
       try {
         await mqttService.connect('wss://test.mosquitto.org:8081/mqtt');
         setMqttConnected(true);
-        console.log('MQTT connected successfully');
+        console.log('✅ MQTT connected successfully');
       } catch (error) {
-        console.error('Failed to connect to MQTT:', error);
+        console.error('❌ Failed to connect to MQTT:', error);
         Alert.alert('Error', 'Gagal terhubung ke MQTT broker');
       }
     };
@@ -73,26 +73,52 @@ export default function CashierDashboard() {
   const handleMQTTMessage = async (data: any) => {
     // Stop if already received payment
     if (hasReceivedPaymentRef.current) {
+      console.log('⚠️ Already received payment data, ignoring...');
       return;
     }
 
-    hasReceivedPaymentRef.current = true;
+    console.log('📨 Received MQTT message:', JSON.stringify(data, null, 2));
 
     try {
-      const { items, id } = data;
+      // Parse data jika berupa string
+      let parsedData = data;
+      if (typeof data === 'string') {
+        try {
+          parsedData = JSON.parse(data);
+        } catch (e) {
+          console.error('Failed to parse MQTT data as JSON:', e);
+          return;
+        }
+      }
+
+      const { items, id } = parsedData;
+
+      if (!items || !Array.isArray(items)) {
+        console.error('❌ Invalid MQTT data format. Expected: { id: "userId", items: [...] }');
+        console.error('Received:', parsedData);
+        return;
+      }
+
+      if (items.length === 0) {
+        console.warn('⚠️ Items array is empty');
+        return;
+      }
 
       // Save user ID from MQTT payload
       setCurrentUserId(id || 'unknown');
       console.log('📥 Received user ID:', id);
 
-      if (!items || !Array.isArray(items)) {
-        console.error('Invalid MQTT data format');
-        return;
-      }
+      console.log(`🛒 Processing ${items.length} items...`);
 
       const productsData: Product[] = [];
+      const notFoundProducts: string[] = [];
 
       for (const item of items) {
+        if (!item.id) {
+          console.warn('⚠️ Item missing id:', item);
+          continue;
+        }
+
         const productDoc = await getDoc(doc(db, 'products', item.id));
         if (productDoc.exists()) {
           const p = productDoc.data();
@@ -100,24 +126,57 @@ export default function CashierDashboard() {
             id: item.id,
             name: p.name,
             price: p.price,
-            qty: item.qty,
+            qty: item.qty || 1,
             cartId: currentCartId || 'UNKNOWN',
             discount: p.discount || 0,
           });
+          console.log(`✅ Added product: ${p.name} (qty: ${item.qty || 1})`);
+        } else {
+          console.warn(`⚠️ Product not found in database: ${item.id}`);
+          notFoundProducts.push(item.id);
         }
       }
 
-      setProducts(productsData);
+      // Set flag after processing to prevent looping
+      hasReceivedPaymentRef.current = true;
 
-      // Stop listening after successful receipt
-      if (currentSubscribedTopic) {
-        mqttService.unsubscribe(currentSubscribedTopic, handleMQTTMessage);
-        console.log(`🛑 Unsubscribed after first payment: ${currentSubscribedTopic}`);
-        setCurrentSubscribedTopic(null);
+      if (productsData.length > 0) {
+        setProducts(productsData);
+        console.log(`✅ Successfully loaded ${productsData.length} products to cart`);
+        
+        // Show warning if some products not found
+        if (notFoundProducts.length > 0) {
+          Alert.alert(
+            'Peringatan',
+            `${productsData.length} produk berhasil ditambahkan.\n\n${notFoundProducts.length} produk tidak ditemukan:\n${notFoundProducts.slice(0, 3).join(', ')}${notFoundProducts.length > 3 ? '...' : ''}`
+          );
+        }
+
+        // Stop listening after receiving payment
+        if (currentSubscribedTopic) {
+          mqttService.unsubscribe(currentSubscribedTopic, handleMQTTMessage);
+          console.log(`🛑 Unsubscribed after receiving payment: ${currentSubscribedTopic}`);
+          setCurrentSubscribedTopic(null);
+        }
+      } else {
+        console.error('❌ No valid products found');
+        const errorMessage = notFoundProducts.length > 0
+          ? `Produk tidak ditemukan di database:\n${notFoundProducts.join(', ')}\n\nPastikan produk sudah terdaftar di Firebase.`
+          : 'Tidak ada produk valid yang ditemukan';
+        
+        Alert.alert('Error', errorMessage);
+        
+        // Stop listening after error to prevent looping
+        if (currentSubscribedTopic) {
+          mqttService.unsubscribe(currentSubscribedTopic, handleMQTTMessage);
+          console.log(`🛑 Unsubscribed after error: ${currentSubscribedTopic}`);
+          setCurrentSubscribedTopic(null);
+        }
       }
 
     } catch (err) {
-      console.error(err);
+      console.error('❌ Error processing MQTT message:', err);
+      Alert.alert('Error', 'Gagal memproses data dari MQTT');
     }
   };
 
@@ -133,25 +192,29 @@ export default function CashierDashboard() {
     }
 
     try {
-      // Unsubscribe from previous topic if exists
+      // Unsubscribe dari topic sebelumnya jika ada
       if (currentSubscribedTopic) {
         mqttService.unsubscribe(currentSubscribedTopic, handleMQTTMessage);
         console.log(`Unsubscribed from: ${currentSubscribedTopic}`);
       }
 
-      // Reset received payment flag
+      // Reset state untuk cart baru
       hasReceivedPaymentRef.current = false;
+      setProducts([]);
+      setCurrentUserId(null);
 
-      // Subscribe to new topic with format: {cartId}/payment
-      const topic = `${cartId}/payment`;
+      // Subscribe ke topic baru dengan format: {cartId}/payment
+      const topic = `${cartId.trim()}/payment`;
       mqttService.subscribe(topic, handleMQTTMessage);
       setCurrentSubscribedTopic(topic);
-      setCurrentCartId(cartId);
+      setCurrentCartId(cartId.trim());
 
-      console.log(`Subscribed to topic: ${topic}`);
+      console.log(`✅ Subscribed to topic: ${topic}`);
+      console.log(`🔄 Reset payment flag, ready to receive data`);
+      
       Alert.alert(
         'Berhasil', 
-        `Terhubung ke keranjang ${cartId}`
+        `Terhubung ke keranjang ${cartId.trim()}\nMenunggu data dari topic...`
       );
       
       // Clear input
@@ -207,7 +270,7 @@ export default function CashierDashboard() {
     };
 
     try {
-      // 1. Save to User History
+      // 1. Save to User History (if userId is available)
       if (finalUserId !== 'unknown') {
         const userHistoryRef = collection(db, 'users', finalUserId, 'history');
         const transactionData = {
@@ -217,13 +280,13 @@ export default function CashierDashboard() {
             name: item.name,
             price: item.price,
             qty: item.qty,
-            subtotal: item.price * item.qty
+            subtotal: item.price * item.qty * (1 - (item.discount || 0) / 100)
           })),
           totalItems: totalItems,
           totalPrice: totalAmount,
           paymentMethod: method,
-          cashPaid: cashPaid,
-          change: cashPaid ? cashPaid - totalAmount : undefined,
+          cashPaid: cashPaid || null,
+          change: cashPaid ? cashPaid - totalAmount : null,
           timestamp: serverTimestamp(),
           createdAt: new Date().toISOString(),
           status: 'paid'
@@ -242,13 +305,13 @@ export default function CashierDashboard() {
           name: item.name,
           price: item.price,
           qty: item.qty,
-          subtotal: item.price * item.qty
+          subtotal: item.price * item.qty * (1 - (item.discount || 0) / 100)
         })),
         totalItems: totalItems,
         totalPrice: totalAmount,
         paymentMethod: method,
-        cashPaid: cashPaid,
-        change: cashPaid ? cashPaid - totalAmount : undefined,
+        cashPaid: cashPaid || null,
+        change: cashPaid ? cashPaid - totalAmount : null,
         timestamp: serverTimestamp(),
         createdAt: new Date().toISOString(),
         status: 'paid'
@@ -256,7 +319,7 @@ export default function CashierDashboard() {
 
       console.log('✅ Transaction saved to global transactions');
 
-      // 3. Send payment status "paid" via MQTT
+      // 3. 🔥 SEND PAYMENT STATUS "PAID" VIA MQTT (untuk tunai DAN transfer)
       if (mqttConnected && finalCartId !== 'UNKNOWN') {
         const paymentStatusTopic = `${finalCartId}/payment-status`;
         const paymentStatusPayload = {
@@ -273,7 +336,8 @@ export default function CashierDashboard() {
           JSON.stringify(paymentStatusPayload)
         );
         
-        console.log('📤 Payment status sent to MQTT:', paymentStatusTopic, paymentStatusPayload);
+        console.log('📤 Payment status "paid" sent to MQTT:', paymentStatusTopic);
+        console.log('📤 Payload:', paymentStatusPayload);
       }
 
       // 4. Show receipt
@@ -283,11 +347,11 @@ export default function CashierDashboard() {
 
       Alert.alert(
         'Pembayaran Berhasil!', 
-        `Transaksi untuk user "${finalUserId}" telah disimpan.\nStatus pembayaran telah dikirim ke keranjang.`
+        `Transaksi untuk user "${finalUserId}" telah disimpan.\nStatus pembayaran telah dikirim ke keranjang via MQTT.`
       );
 
     } catch (error) {
-      console.error('Error saving transaction:', error);
+      console.error('❌ Error saving transaction:', error);
       Alert.alert('Error', 'Gagal menyimpan transaksi: ' + (error as Error).message);
     }
   };
